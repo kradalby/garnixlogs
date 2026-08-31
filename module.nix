@@ -70,13 +70,9 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
-        Path to an EnvironmentFile sourced by the service. Carries the secrets:
-        GARNIX_TOKEN=... (the garnix API access token, used as the password half
-        of Basic auth to mint a JWT) and TS_AUTHKEY=... (unattended tailnet
-        enrolment). Keep it out of the Nix store (e.g. an agenix/ragenix secret).
-
-        Without GARNIX_TOKEN the service still starts, but only public
-        repositories resolve.
+        EnvironmentFile carrying GARNIX_TOKEN and TS_AUTHKEY. Keep it out of the
+        Nix store (e.g. an agenix secret). Without the token only public
+        repositories resolve; the service still starts.
       '';
     };
   };
@@ -111,8 +107,7 @@ in
         Restart = "always";
         RestartSec = "30s";
 
-        # Graceful shutdown: SIGTERM to the main pid so in-flight followers
-        # drain; SIGKILL only mops up stragglers at the stop timeout.
+        # SIGTERM first so in-flight followers drain.
         KillMode = "mixed";
         TimeoutStopSec = "30s";
 
@@ -121,8 +116,7 @@ in
         AmbientCapabilities = [ "CAP_NET_ADMIN" ];
         CapabilityBoundingSet = [ "CAP_NET_ADMIN" ];
 
-        # Hardening: this reads one HTTP API and joins the tailnet. It needs
-        # outbound network and its own state directory; nothing else.
+        # Needs outbound network and its state directory; nothing else.
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;

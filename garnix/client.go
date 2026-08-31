@@ -1,10 +1,8 @@
 // Package garnix is a client for the garnix CI HTTP API.
 //
-// Authentication is two-step: the access token is the password half of HTTP
-// Basic auth against POST /api/auth/jwt, which mints a short-lived JWT that
-// every other endpoint wants as a Bearer token. The access token is not itself
-// a JWT — sent as one it reads as an anonymous request, which succeeds on
-// public repositories and reports "not found" on private ones.
+// Auth is two-step: the access token is the Basic-auth password that mints a
+// short-lived Bearer JWT. Sent as a Bearer token itself it reads as anonymous —
+// fine on public repos, a misleading "not found" on private ones.
 package garnix
 
 import (
@@ -105,9 +103,8 @@ type LogLine struct {
 	Phase     *string   `json:"phase"`
 }
 
-// Logs is one page of build output. Finished is the API's own paging signal and
-// says nothing reliable about whether the build itself is still running; use
-// Build.Done for that.
+// Logs is one page of build output. Finished is a paging signal, not a build
+// state — use Build.Done for that.
 type Logs struct {
 	Finished    bool      `json:"finished"`
 	MaxPageSize int       `json:"max_page_size"`
@@ -221,9 +218,8 @@ func (c *Client) mintJWT(ctx context.Context) (string, time.Time, error) {
 	return out.Token, out.ExpiresAt, nil
 }
 
-// bearer returns a usable JWT, minting one when the cache is empty, stale, or
-// force is set. Returns "" when no token is configured, so the request goes out
-// anonymously and public repositories still work.
+// bearer returns a usable JWT, minting one when the cache is empty, stale or
+// force is set. "" when no token is configured: the request goes out anonymously.
 func (c *Client) bearer(ctx context.Context, force bool) (string, error) {
 	if c.token == "" {
 		return "", nil

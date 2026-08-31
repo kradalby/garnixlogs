@@ -1,15 +1,9 @@
-// Command garnixlogs serves garnix CI build logs as plain text over the
-// tailnet, so an agent can read CI output with one unauthenticated curl instead
-// of minting a JWT and walking the JSON API.
+// Command garnixlogs serves garnix CI build logs as plain text over the tailnet,
+// so an agent reads CI output with one unauthenticated curl. Runs as its own
+// tsnet node; the tailnet ACL is the only access control.
 //
-// It runs as its own tsnet node, which makes it reachable from anywhere on the
-// tailnet regardless of which host runs it. The tailnet ACL is the only access
-// control: every reader sees every log this node's token can fetch.
-//
-// Configuration is via flags or the matching GARNIXLOGS_-prefixed environment
-// variables (e.g. GARNIXLOGS_HOSTNAME). Secrets come only from the environment:
-// GARNIX_TOKEN (the garnix API access token) and TS_AUTHKEY (unattended tailnet
-// enrolment).
+// Config from flags or GARNIXLOGS_-prefixed env. Secrets from env only:
+// GARNIX_TOKEN and TS_AUTHKEY.
 package main
 
 import (

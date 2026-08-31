@@ -1,8 +1,6 @@
-// Package server serves garnix build logs as plain text over HTTP.
-//
-// One catch-all handler takes a single path segment and works out whether it
-// names a build, an action run, a commit, or a repository, then writes the
-// matching view. Everything it emits is text: no JSON, no HTML, no framing.
+// Package server serves garnix build logs as plain text over HTTP. One
+// catch-all handler resolves a path segment to a build, run, commit or repo and
+// writes the matching view.
 package server
 
 import (
@@ -142,9 +140,8 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
 
 	req := parse(r)
 	if req.seg == "" {
-		// The configured name, not the request's Host header: reflecting an
-		// attacker-controlled header back into the body is a taint even when
-		// the response is text/plain.
+		// Configured name, not r.Host: never reflect an attacker-controlled
+		// header into the body.
 		fmt.Fprint(w, render.Usage(s.baseURL))
 
 		return
@@ -394,11 +391,8 @@ func (s *Server) dumpFailed(
 type pager func(ctx context.Context, id string, after time.Time) (*garnix.Logs, error)
 
 // drain writes every log line available now, paging until it catches up, and
-// returns the newest timestamp written.
-//
-// The API caps a page at MaxPageSize; a short page means there is nothing more
-// to collect yet. It is not a signal about the build's own state — a running
-// build with a quiet moment also returns a short page.
+// returns the newest timestamp written. A short page means "nothing more yet",
+// never "build finished" — a running build in a quiet moment returns one too.
 func (s *Server) drain(
 	ctx context.Context,
 	w http.ResponseWriter,

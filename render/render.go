@@ -42,8 +42,7 @@ func (k Kind) String() string {
 	}
 }
 
-// ansiRE matches a CSI escape sequence. Build output is full of colour codes
-// that only get in an agent's way.
+// ansiRE matches a CSI escape sequence.
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 // StripANSI removes colour and cursor escapes from a log line.
@@ -71,12 +70,9 @@ func isAlnum(s string) bool {
 	return s != ""
 }
 
-// Order returns the kinds a path segment could name, most likely first.
-//
-// Build and run ids are both Hashids with a minimum length of 8 and an
-// alphanumeric alphabet, so they cannot be told apart from each other — nor
-// from a short commit hash — by shape alone. Anything ambiguous is probed in
-// this order rather than guessed.
+// Order returns the kinds a path segment could name, most likely first. Build
+// and run ids are both min-8 alphanumeric Hashids, so shape cannot separate them
+// from each other or from a short hash: ambiguity is probed, not guessed.
 func Order(seg string) []Kind {
 	if strings.Contains(seg, "/") {
 		return []Kind{KindRepo}
@@ -194,9 +190,8 @@ func buildTable(w io.Writer, builds []garnix.Build) {
 	tw.Flush()
 }
 
-// CommitHeader renders the summary block for a commit: the repo line, the
-// tally, and a table of the builds that failed. The caller appends each failed
-// build's log after it.
+// CommitHeader renders a commit's repo line, tally and failed-build table. The
+// caller appends each failed build's log after it.
 func CommitHeader(c *garnix.Commit, all bool) string {
 	var b strings.Builder
 
