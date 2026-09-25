@@ -31,17 +31,11 @@
       system:
       let
         # nixpkgs' bare `go` is still 1.26 while this repo targets 1.27, so the
-        # Go version is named explicitly everywhere as `go_latest`. The Go dev
-        # tools that ship *wrapped with a `go` on PATH* (goimports, via gotools)
-        # must be rebuilt against it too: otherwise that wrapper's older `go`
-        # sees the 1.27 directive in go.mod and GOTOOLCHAIN=auto tries to fetch
-        # a toolchain from inside the network-less treefmt sandbox.
+        # Go version is named explicitly everywhere as `go_latest`, and gofumpt
+        # is rebuilt with it. goimports needs no rebuild: flake-checks puts
+        # goPkg first on its PATH, so its `go` accepts the 1.27 directive.
         goOverlay = _final: prev: {
           gofumpt = prev.gofumpt.override { buildGoModule = prev.buildGoLatestModule; };
-          gotools = prev.gotools.override {
-            buildGoModule = prev.buildGoLatestModule;
-            go = prev.go_latest;
-          };
         };
         pkgs = import nixpkgs {
           inherit system;
