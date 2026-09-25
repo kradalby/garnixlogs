@@ -21,11 +21,13 @@
     in
     {
       overlays.default = _final: prev: {
-        garnixlogs = self.packages.${prev.system}.default;
+        garnixlogs = self.packages.${prev.stdenv.hostPlatform.system}.default;
       };
       nixosModules.default = import ./module.nix self;
     }
-    // flake-utils.lib.eachDefaultSystem (
+    # eachDefaultSystem still lists x86_64-darwin, which nixpkgs 26.11 dropped:
+    # evaluating any output for it throws.
+    // flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
       system:
       let
         # nixpkgs' bare `go` is still 1.26 while this repo targets 1.27, so the
