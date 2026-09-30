@@ -236,10 +236,11 @@ func (c *Client) mintJWT(ctx context.Context) (string, time.Time, error) {
 	return out.Token, out.ExpiresAt, nil
 }
 
-// bearer returns a usable JWT, minting one when the cache is empty, stale or
-// force is set.
-func (c *Client) bearer(ctx context.Context, force bool) (*jwt, error) {
-	if j := c.cur.Load(); j.fresh() && !force {
+// bearer returns a usable JWT, minting one when the cache is empty or stale.
+// rejected is one the server just refused: comparing by pointer, only the
+// first caller to report it re-mints and the rest reuse the replacement.
+func (c *Client) bearer(ctx context.Context, rejected *jwt) (*jwt, error) {
+	if j := c.cur.Load(); j != rejected && j.fresh() {
 		return j, nil
 	}
 
@@ -251,7 +252,7 @@ func (c *Client) bearer(ctx context.Context, force bool) (*jwt, error) {
 	defer func() { <-c.mint }()
 
 	// Whoever held the slot before us may have minted already.
-	if j := c.cur.Load(); j.fresh() && !force {
+	if j := c.cur.Load(); j != rejected && j.fresh() {
 		return j, nil
 	}
 
@@ -273,39 +274,44 @@ func (c *Client) bearer(ctx context.Context, force bool) (*jwt, error) {
 // get fetches path into out, re-minting the JWT once if the server rejects the
 // cached one.
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	status, err := c.getOnce(ctx, path, out, false)
-	if err == nil {
-		return nil
+	// Without a token the request goes out anonymously.
+	if !c.Authenticated() {
+		_, err := c.getOnce(ctx, path, out, "")
+
+		return err
 	}
 
-	rejected := status == http.StatusUnauthorized || status == http.StatusForbidden
-	if !rejected || !c.Authenticated() {
+	j, err := c.bearer(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	status, err := c.getOnce(ctx, path, out, j.tok)
+	if status != http.StatusUnauthorized && status != http.StatusForbidden {
 		return err
 	}
 
 	c.log.Debug("garnix rejected cached jwt, re-minting", "path", path, "status", status)
 
-	_, err = c.getOnce(ctx, path, out, true)
+	if j, err = c.bearer(ctx, j); err != nil {
+		return err
+	}
+
+	_, err = c.getOnce(ctx, path, out, j.tok)
 
 	return err
 }
 
 // getOnce performs a single attempt, returning the HTTP status so get can
 // decide whether a retry with a fresh token is worth it.
-func (c *Client) getOnce(ctx context.Context, path string, out any, force bool) (int, error) {
+func (c *Client) getOnce(ctx context.Context, path string, out any, tok string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return 0, fmt.Errorf("build request %s: %w", path, err)
 	}
 
-	// Without a token the request goes out anonymously.
-	if c.Authenticated() {
-		j, err := c.bearer(ctx, force)
-		if err != nil {
-			return 0, err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+j.tok)
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 
 	resp, err := c.hc.Do(req)
