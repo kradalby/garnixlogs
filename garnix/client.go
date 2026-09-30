@@ -14,13 +14,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// jwtSkew is how long before expiry a cached JWT is re-minted, so a request
-// cannot start with a token that expires mid-flight.
-const jwtSkew = time.Minute
+const (
+	// jwtSkew is how long before expiry a cached JWT is re-minted, so a
+	// request cannot start with a token that expires mid-flight.
+	jwtSkew = time.Minute
+
+	// mintTimeout bounds a mint on its own: callers queue behind it, and the
+	// one minting may have no deadline of its own.
+	mintTimeout = 10 * time.Second
+)
 
 var (
 	// ErrNotFound is returned for a 404. Callers probing an ambiguous path
@@ -119,9 +125,19 @@ type Client struct {
 	hc    *http.Client
 	log   *slog.Logger
 
-	mu     sync.Mutex
-	jwt    string
-	jwtExp time.Time
+	cur         atomic.Pointer[jwt]
+	mint        chan struct{} // one-slot semaphore; unlike a mutex, waiting on it honours ctx
+	mintTimeout time.Duration
+}
+
+// jwt is never mutated once published, so readers need no lock.
+type jwt struct {
+	tok string
+	exp time.Time
+}
+
+func (j *jwt) fresh() bool {
+	return j != nil && time.Now().Before(j.exp.Add(-jwtSkew))
 }
 
 // Option configures a Client.
@@ -165,8 +181,10 @@ func New(baseURL, user, token string, opts ...Option) (*Client, error) {
 		token: token,
 		// No overall timeout: a follow request streams for as long as the
 		// build runs. Per-request deadlines come from the caller's context.
-		hc:  &http.Client{},
-		log: slog.Default(),
+		hc:          &http.Client{},
+		log:         slog.Default(),
+		mint:        make(chan struct{}, 1),
+		mintTimeout: mintTimeout,
 	}
 
 	for _, o := range opts {
@@ -219,29 +237,37 @@ func (c *Client) mintJWT(ctx context.Context) (string, time.Time, error) {
 }
 
 // bearer returns a usable JWT, minting one when the cache is empty, stale or
-// force is set. "" when no token is configured: the request goes out anonymously.
-func (c *Client) bearer(ctx context.Context, force bool) (string, error) {
-	if c.token == "" {
-		return "", nil
+// force is set.
+func (c *Client) bearer(ctx context.Context, force bool) (*jwt, error) {
+	if j := c.cur.Load(); j.fresh() && !force {
+		return j, nil
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case c.mint <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for jwt mint: %w", ctx.Err())
+	}
+	defer func() { <-c.mint }()
 
-	fresh := c.jwt != "" && time.Now().Before(c.jwtExp.Add(-jwtSkew))
-	if fresh && !force {
-		return c.jwt, nil
+	// Whoever held the slot before us may have minted already.
+	if j := c.cur.Load(); j.fresh() && !force {
+		return j, nil
 	}
 
-	tok, exp, err := c.mintJWT(ctx)
+	mctx, cancel := context.WithTimeout(ctx, c.mintTimeout)
+	defer cancel()
+
+	tok, exp, err := c.mintJWT(mctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	c.jwt, c.jwtExp = tok, exp
+	j := &jwt{tok: tok, exp: exp}
+	c.cur.Store(j)
 	c.log.Debug("minted garnix jwt", "expires_at", exp)
 
-	return tok, nil
+	return j, nil
 }
 
 // get fetches path into out, re-minting the JWT once if the server rejects the
@@ -267,18 +293,19 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 // getOnce performs a single attempt, returning the HTTP status so get can
 // decide whether a retry with a fresh token is worth it.
 func (c *Client) getOnce(ctx context.Context, path string, out any, force bool) (int, error) {
-	tok, err := c.bearer(ctx, force)
-	if err != nil {
-		return 0, err
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return 0, fmt.Errorf("build request %s: %w", path, err)
 	}
 
-	if tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
+	// Without a token the request goes out anonymously.
+	if c.Authenticated() {
+		j, err := c.bearer(ctx, force)
+		if err != nil {
+			return 0, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+j.tok)
 	}
 
 	resp, err := c.hc.Do(req)
