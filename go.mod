@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/google/go-cmp v0.7.0
-	github.com/kradalby/kra v0.0.0-20260925084146-404be82c1776
+	github.com/kradalby/kra v0.0.0-20260930190439-99c91a9be880
 	github.com/peterbourgon/ff/v4 v4.0.0-beta.1
 	github.com/stretchr/testify v1.12.1
 	tailscale.com v1.102.5
