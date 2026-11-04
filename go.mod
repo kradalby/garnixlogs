@@ -3,7 +3,9 @@ module github.com/kradalby/garnixlogs
 go 1.27.0
 
 require (
+	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/google/go-cmp v0.7.0
+	github.com/google/go-github/v88 v88.0.0
 	github.com/kradalby/kra v0.0.0-20260930190439-99c91a9be880
 	github.com/peterbourgon/ff/v4 v4.0.0-beta.1
 	github.com/stretchr/testify v1.12.1
@@ -24,8 +26,10 @@ require (
 	github.com/gaissmai/bart v0.30.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
