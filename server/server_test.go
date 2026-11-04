@@ -1,17 +1,23 @@
 package server
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kradalby/garnixlogs/garnix"
+	"github.com/kradalby/garnixlogs/github"
 )
 
 const testBuildID = "qgx4megl"
@@ -272,6 +278,150 @@ func mustClient(t *testing.T, url string) *garnix.Client {
 	require.NoError(t, err)
 
 	return gx
+}
+
+// fakeApp is a GitHub that accepts any bearer and records which check suites
+// were re-requested; the auth itself is covered in package github.
+func fakeApp(t *testing.T) (*github.App, *atomic.Int32) {
+	t.Helper()
+
+	var rerequests atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/kradalby/dotfiles/installation", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 7})
+	})
+	mux.HandleFunc("POST /app/installations/7/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"token": "t"})
+	})
+	mux.HandleFunc("GET /repos/kradalby/dotfiles/commits/{sha}/check-suites", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"check_suites": []map[string]any{{"id": 11}}})
+	})
+	mux.HandleFunc("POST /repos/kradalby/dotfiles/check-suites/11/rerequest", func(w http.ResponseWriter, _ *http.Request) {
+		rerequests.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	app, err := github.New("42",
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+		github.WithAPIURL(srv.URL))
+	require.NoError(t, err)
+
+	return app, &rerequests
+}
+
+// do routes like main does, so PathValue and the catch-all fallback are real.
+func do(t *testing.T, s *Server, method, target string) (int, string) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.Handle)
+	mux.HandleFunc("/{sha}/retry", s.Retry)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+
+	return rec.Code, rec.Body.String()
+}
+
+func TestRetry(t *testing.T) {
+	t.Parallel()
+
+	const sha = "3090e8b2cb364fe70b4a5d0db00dd082ec5f1649"
+
+	tests := []struct {
+		name          string
+		configured    bool
+		method        string
+		target        string
+		wantCode      int
+		contains      []string
+		absent        []string
+		wantRerequest int32
+	}{
+		{
+			name:          "post re-runs the suite",
+			configured:    true,
+			method:        http.MethodPost,
+			target:        "/" + sha + "/retry",
+			wantCode:      http.StatusAccepted,
+			contains:      []string{"kradalby/dotfiles 3090e8b2", "?follow"},
+			wantRerequest: 1,
+		},
+		{
+			name:       "get explains instead of acting",
+			configured: true,
+			method:     http.MethodGet,
+			target:     "/" + sha + "/retry",
+			wantCode:   http.StatusMethodNotAllowed,
+			contains:   []string{"curl -X POST http://garnixlogs/" + sha + "/retry"},
+		},
+		{
+			name:     "unconfigured says so",
+			method:   http.MethodPost,
+			target:   "/" + sha + "/retry",
+			wantCode: http.StatusNotImplemented,
+			contains: []string{"not configured"},
+		},
+		{
+			name:       "short hash is not a retry",
+			configured: true,
+			method:     http.MethodPost,
+			target:     "/3090e8b2/retry",
+			wantCode:   http.StatusNotFound,
+			contains:   []string{"full 40 characters"},
+		},
+		{
+			name:       "red commit ends with the retry command",
+			configured: true,
+			method:     http.MethodGet,
+			target:     "/" + sha,
+			wantCode:   http.StatusOK,
+			contains:   []string{"retry: curl -X POST http://garnixlogs/" + sha + "/retry"},
+		},
+		{
+			name:     "no retry hint without an app",
+			method:   http.MethodGet,
+			target:   "/" + sha,
+			wantCode: http.StatusOK,
+			absent:   []string{"retry:"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []Option{WithLogger(slog.New(slog.DiscardHandler))}
+
+			app, rerequests := fakeApp(t)
+			if tt.configured {
+				opts = append(opts, WithRetry(app))
+			}
+
+			s, err := New(mustClient(t, fakeGarnix(t, false).URL), opts...)
+			require.NoError(t, err)
+
+			code, body := do(t, s, tt.method, tt.target)
+
+			require.Equal(t, tt.wantCode, code, "body: %s", body)
+			require.Equal(t, tt.wantRerequest, rerequests.Load())
+
+			for _, want := range tt.contains {
+				require.Contains(t, body, want)
+			}
+
+			for _, no := range tt.absent {
+				require.NotContains(t, body, no)
+			}
+		})
+	}
 }
 
 func TestParseFlags(t *testing.T) {
