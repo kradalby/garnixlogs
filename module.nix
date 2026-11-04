@@ -3,6 +3,8 @@
 #   services.garnixlogs = {
 #     enable = true;
 #     environmentFile = config.age.secrets.garnixlogs.path; # GARNIX_TOKEN=... TS_AUTHKEY=...
+#     githubAppIdFile = ...;  # both enable POST /<commit-sha>/retry
+#     githubAppKeyFile = ...;
 #   };
 self:
 {
@@ -75,9 +77,34 @@ in
         repositories resolve; the service still starts.
       '';
     };
+
+    githubAppIdFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        File holding the garnix GitHub App id. Together with githubAppKeyFile
+        it enables POST /<commit-sha>/retry.
+      '';
+    };
+
+    githubAppKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        File holding the garnix GitHub App private key (PEM). Handed over as a
+        systemd credential, so it may stay readable by root only.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = (cfg.githubAppIdFile == null) == (cfg.githubAppKeyFile == null);
+        message = "services.garnixlogs: githubAppIdFile and githubAppKeyFile go together.";
+      }
+    ];
+
     systemd.services.garnixlogs = {
       description = "garnixlogs — garnix CI build logs as plain text";
       wantedBy = [ "multi-user.target" ];
@@ -91,16 +118,23 @@ in
       ];
 
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          (lib.getExe cfg.package)
-          "--hostname=${cfg.hostname}"
-          "--state-dir=/var/lib/garnixlogs"
-          "--local-addr=${cfg.localAddr}"
-          "--garnix-url=${cfg.garnixURL}"
-          "--garnix-user=${cfg.garnixUser}"
-          "--default-owner=${cfg.defaultOwner}"
-          "--log-level=${cfg.logLevel}"
-        ];
+        ExecStart = lib.escapeShellArgs (
+          [
+            (lib.getExe cfg.package)
+            "--hostname=${cfg.hostname}"
+            "--state-dir=/var/lib/garnixlogs"
+            "--local-addr=${cfg.localAddr}"
+            "--garnix-url=${cfg.garnixURL}"
+            "--garnix-user=${cfg.garnixUser}"
+            "--default-owner=${cfg.defaultOwner}"
+            "--log-level=${cfg.logLevel}"
+          ]
+          # %d is the credentials directory LoadCredential fills.
+          ++ lib.optionals (cfg.githubAppKeyFile != null) [
+            "--github-app-id-file=%d/github-app-id"
+            "--github-app-key-file=%d/github-app-key"
+          ]
+        );
 
         DynamicUser = true;
         StateDirectory = "garnixlogs";
@@ -140,6 +174,12 @@ in
       }
       // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
+      }
+      // lib.optionalAttrs (cfg.githubAppKeyFile != null) {
+        LoadCredential = [
+          "github-app-id:${cfg.githubAppIdFile}"
+          "github-app-key:${cfg.githubAppKeyFile}"
+        ];
       };
     };
   };
