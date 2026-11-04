@@ -103,6 +103,10 @@ func Usage(host string) string {
   /<repo>            recent commits for kradalby/<repo>
   /<owner>/<repo>    recent commits, explicit owner
 
+  POST /<commit-sha>/retry
+                     re-run every garnix check on a commit (flaky test,
+                     infra fault); passed builds come back from cache
+
 Flags (query string):
 
   ?follow            keep streaming until the build finishes
@@ -115,6 +119,7 @@ Examples:
   curl %[1]s/dotfiles
   curl %[1]s/$(git rev-parse HEAD)
   curl "%[1]s/<build-id>?follow"
+  curl -X POST %[1]s/$(git rev-parse HEAD)/retry
 `, host)
 }
 

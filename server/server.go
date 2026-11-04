@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/kradalby/garnixlogs/garnix"
+	"github.com/kradalby/garnixlogs/github"
 	"github.com/kradalby/garnixlogs/render"
 )
 
@@ -25,6 +27,7 @@ const defaultPoll = 2 * time.Second
 // Server renders garnix API objects as text.
 type Server struct {
 	gx      *garnix.Client
+	gh      *github.App
 	log     *slog.Logger
 	owner   string
 	baseURL string
@@ -77,6 +80,19 @@ func WithPollInterval(d time.Duration) Option {
 			return errors.New("poll interval must be positive")
 		}
 		s.poll = d
+
+		return nil
+	}
+}
+
+// WithRetry enables POST /<commit-sha>/retry, re-running checks as the garnix
+// App.
+func WithRetry(app *github.App) Option {
+	return func(s *Server) error {
+		if app == nil {
+			return errors.New("nil github app")
+		}
+		s.gh = app
 
 		return nil
 	}
@@ -158,6 +174,76 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Fprintf(w, "\nerror: %v\n", err)
 	}
+}
+
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// Retry re-runs every garnix check on a commit: POST /<commit-sha>/retry.
+func (s *Server) Retry(w http.ResponseWriter, r *http.Request) {
+	sha := r.PathValue("sha")
+
+	// /<owner>/retry is a repository listing, not a retry.
+	if !shaPattern.MatchString(sha) {
+		s.Handle(w, r)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	// GET explains instead of acting, so a crawler or a guessed URL never
+	// starts CI.
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		//nolint:gosec // sha matched shaPattern; the body is text/plain with nosniff.
+		fmt.Fprintf(w, "re-run this commit's garnix checks with: curl -X POST %s/%s/retry\n", s.baseURL, sha)
+
+		return
+	}
+
+	if s.gh == nil {
+		http.Error(w, "retry is not configured on this server: it has no GitHub App key", http.StatusNotImplemented)
+
+		return
+	}
+
+	commit, err := s.gx.Commit(r.Context(), sha)
+	if errors.Is(err, garnix.ErrNotFound) {
+		http.Error(w, sha+": garnix has no run of this commit to retry", http.StatusNotFound)
+
+		return
+	}
+
+	if err == nil {
+		_, err = s.gh.Rerun(r.Context(), commit.Summary.RepoOwner, commit.Summary.RepoName, sha)
+	}
+
+	if err != nil {
+		s.log.Error("retry failed", "commit", sha, "err", err)
+		http.Error(w, "retry failed: "+err.Error(), http.StatusBadGateway)
+
+		return
+	}
+
+	s.log.Info("retry requested", "repo", commit.Summary.RepoOwner+"/"+commit.Summary.RepoName, "commit", sha)
+
+	w.WriteHeader(http.StatusAccepted)
+	//nolint:gosec // sha matched shaPattern; the body is text/plain with nosniff.
+	fmt.Fprintf(w, "re-running every garnix check on %s/%s %s; passed builds come back from cache\n"+
+		"follow: curl \"%s/%s?follow\"\n",
+		commit.Summary.RepoOwner, commit.Summary.RepoName, render.Short(sha), s.baseURL, sha)
+}
+
+// retryHint ends a red commit's output with the way to re-run it, where an
+// agent reading the tail finds it.
+func (s *Server) retryHint(w http.ResponseWriter, commit *garnix.Commit) {
+	if s.gh == nil || commit.Summary.Failed == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "\nretry: curl -X POST %s/%s/retry\n", s.baseURL, commit.Summary.Commit)
 }
 
 // errNoMatch names the abbreviated-hash case explicitly: git prints short
@@ -332,6 +418,8 @@ func (s *Server) serveCommit(ctx context.Context, w http.ResponseWriter, req req
 	}
 
 	if !req.follow || commit.Summary.Pending == 0 {
+		s.retryHint(w, commit)
+
 		return nil
 	}
 
@@ -355,6 +443,7 @@ func (s *Server) serveCommit(ctx context.Context, w http.ResponseWriter, req req
 
 		if commit.Summary.Pending == 0 {
 			fmt.Fprintf(w, "\n--- %s done: %s ---\n", render.Short(commit.Summary.Commit), render.Tally(commit.Summary))
+			s.retryHint(w, commit)
 			flush(w)
 
 			return nil

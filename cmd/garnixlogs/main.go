@@ -3,7 +3,8 @@
 // tsnet node; the tailnet ACL is the only access control.
 //
 // Config from flags or GARNIXLOGS_-prefixed env. Secrets from env only:
-// GARNIX_TOKEN and TS_AUTHKEY.
+// GARNIX_TOKEN and TS_AUTHKEY. The garnix GitHub App's id and key are read from
+// files, and enable retries when given.
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"github.com/kradalby/kra/web"
 
 	"github.com/kradalby/garnixlogs/garnix"
+	"github.com/kradalby/garnixlogs/github"
 	"github.com/kradalby/garnixlogs/server"
 )
 
@@ -62,6 +64,8 @@ type config struct {
 	garnixUser   *string
 	defaultOwner *string
 	poll         *time.Duration
+	appIDFile    *string
+	appKeyFile   *string
 	logLevel     *string
 	dev          *bool
 }
@@ -76,6 +80,8 @@ func newCommand(log *slog.Logger, lvl *slog.LevelVar) *ff.Command {
 		garnixUser:   fs.StringLong("garnix-user", "kradalby", "GitHub login the access token belongs to"),
 		defaultOwner: fs.StringLong("default-owner", "kradalby", "repository owner assumed for a bare repo name"),
 		poll:         fs.DurationLong("poll", 2*time.Second, "how often a followed build is re-checked"),
+		appIDFile:    fs.StringLong("github-app-id-file", "", "file holding the garnix GitHub App id; enables retries"),
+		appKeyFile:   fs.StringLong("github-app-key-file", "", "file holding the garnix GitHub App private key (PEM)"),
 		logLevel:     fs.StringLong("log-level", "info", "log level: debug, info, warn or error"),
 		dev:          fs.BoolLong("dev", "serve plain local HTTP only, without joining the tailnet; for testing"),
 	}
@@ -113,11 +119,23 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config) error {
 		return fmt.Errorf("build garnix client: %w", err)
 	}
 
-	logs, err := server.New(gx,
+	srvOpts := []server.Option{
 		server.WithLogger(log),
 		server.WithDefaultOwner(*cfg.defaultOwner),
-		server.WithBaseURL("http://"+*cfg.hostname),
-		server.WithPollInterval(*cfg.poll))
+		server.WithBaseURL("http://" + *cfg.hostname),
+		server.WithPollInterval(*cfg.poll),
+	}
+
+	app, err := loadApp(*cfg.appIDFile, *cfg.appKeyFile)
+	if err != nil {
+		return err
+	}
+
+	if app != nil {
+		srvOpts = append(srvOpts, server.WithRetry(app))
+	}
+
+	logs, err := server.New(gx, srvOpts...)
 	if err != nil {
 		return fmt.Errorf("build log server: %w", err)
 	}
@@ -140,13 +158,44 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config) error {
 	}
 
 	srv.HandleFunc("/", logs.Handle)
+	srv.HandleFunc("/{sha}/retry", logs.Retry)
 
 	log.Info("serving garnix logs",
 		"hostname", *cfg.hostname,
 		"local_addr", *cfg.localAddr,
 		"garnix", *cfg.garnixURL,
 		"authenticated", gx.Authenticated(),
+		"retry", app != nil,
 		"tailscale", !*cfg.dev)
 
 	return srv.ListenAndServe(ctx)
+}
+
+// loadApp reads the GitHub App credentials. Neither file means retries stay
+// off; only one is a misconfiguration worth failing on.
+func loadApp(idFile, keyFile string) (*github.App, error) {
+	if idFile == "" && keyFile == "" {
+		return nil, nil //nolint:nilnil // no app is a valid configuration
+	}
+
+	if idFile == "" || keyFile == "" {
+		return nil, errors.New("--github-app-id-file and --github-app-key-file go together")
+	}
+
+	id, err := os.ReadFile(idFile)
+	if err != nil {
+		return nil, fmt.Errorf("read github app id: %w", err)
+	}
+
+	key, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read github app key: %w", err)
+	}
+
+	app, err := github.New(string(id), key)
+	if err != nil {
+		return nil, fmt.Errorf("load github app: %w", err)
+	}
+
+	return app, nil
 }
