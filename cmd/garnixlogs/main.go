@@ -158,7 +158,6 @@ func serve(ctx context.Context, log *slog.Logger, cfg *config) error {
 	}
 
 	srv.HandleFunc("/", logs.Handle)
-	srv.HandleFunc("/{sha}/retry", logs.Retry)
 
 	log.Info("serving garnix logs",
 		"hostname", *cfg.hostname,

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"tailscale.com/tsweb"
 
 	"github.com/kradalby/garnixlogs/garnix"
 	"github.com/kradalby/garnixlogs/github"
@@ -316,13 +317,14 @@ func fakeApp(t *testing.T) (*github.App, *atomic.Int32) {
 	return app, &rerequests
 }
 
-// do routes like main does, so PathValue and the catch-all fallback are real.
+// do routes like main does, debug routes included, so a pattern that
+// conflicts with them panics here rather than on the host.
 func do(t *testing.T, s *Server, method, target string) (int, string) {
 	t.Helper()
 
 	mux := http.NewServeMux()
+	tsweb.Debugger(mux)
 	mux.HandleFunc("/", s.Handle)
-	mux.HandleFunc("/{sha}/retry", s.Retry)
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(method, target, nil))

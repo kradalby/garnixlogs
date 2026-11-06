@@ -163,6 +163,15 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dispatched here, not as its own mux pattern: "/{sha}/retry" conflicts
+	// with tsweb's "/debug/" on the same mux. /<owner>/retry is a repository
+	// listing, hence the full-hash check.
+	if sha, ok := strings.CutSuffix(req.seg, "/retry"); ok && shaPattern.MatchString(sha) {
+		s.retry(w, r, sha)
+
+		return
+	}
+
 	// Errors after the first byte cannot become a status code, so they are
 	// appended to the body instead — an agent reading the tail still sees them.
 	if err := s.route(r.Context(), w, req); err != nil {
@@ -178,20 +187,8 @@ func (s *Server) Handle(w http.ResponseWriter, r *http.Request) {
 
 var shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// Retry re-runs every garnix check on a commit: POST /<commit-sha>/retry.
-func (s *Server) Retry(w http.ResponseWriter, r *http.Request) {
-	sha := r.PathValue("sha")
-
-	// /<owner>/retry is a repository listing, not a retry.
-	if !shaPattern.MatchString(sha) {
-		s.Handle(w, r)
-
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
+// retry re-runs every garnix check on a commit: POST /<commit-sha>/retry.
+func (s *Server) retry(w http.ResponseWriter, r *http.Request, sha string) {
 	// GET explains instead of acting, so a crawler or a guessed URL never
 	// starts CI.
 	if r.Method != http.MethodPost {
